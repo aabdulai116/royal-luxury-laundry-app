@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Royal Luxury Laundry</string>
+    <string name="title_activity_main">Royal Luxury Laundry</string>
+    <string name="package_name">com.royalluxurylaundry.app</string>
+    <string name="custom_url_scheme">com.royalluxurylaundry.app</string>
+</resources>

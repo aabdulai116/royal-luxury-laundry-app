@@ -1,0 +1,109 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isStaff() {
+      return request.auth != null;
+    }
+
+    match /orders/{orderId} {
+      allow get: if true;
+      allow list: if isStaff();
+
+      // A public booking may only contain these fields, and only these.
+      // customerLocation is here because a customer can pin their delivery
+      // spot before submitting, not only after — an earlier version of
+      // this rule missed that and rejected every booking that came with a
+      // pin already attached.
+      //
+      // NEW for the mobile app: 'pushToken' was added to this whitelist so
+      // a booking can optionally include the device's token from the very
+      // first write (everything else on this rule is unchanged from the
+      // live site).
+      allow create: if request.resource.data.id == orderId
+        && request.resource.data.status == "Requested"
+        && request.resource.data.keys().hasOnly([
+             'id','name','phone','email','service','express','address',
+             'date','time','notes','status','createdAt','statusHistory',
+             'referredByCode','redeemPointsRequested','customerLocation',
+             'pushToken'
+           ])
+        && request.resource.data.keys().hasAll([
+             'id','name','phone','email','service','address','date','time','status','createdAt'
+           ])
+        && request.resource.data.createdAt is number
+        && (!('referredByCode' in request.resource.data)
+            || (request.resource.data.referredByCode is string
+                && request.resource.data.referredByCode.size() <= 16))
+        && (!('redeemPointsRequested' in request.resource.data)
+            || request.resource.data.redeemPointsRequested is bool)
+        && (!('customerLocation' in request.resource.data)
+            || (request.resource.data.customerLocation.lat is number
+                && request.resource.data.customerLocation.lng is number))
+        && (!('pushToken' in request.resource.data)
+            || (request.resource.data.pushToken is string
+                && request.resource.data.pushToken.size() > 0));
+
+      allow update: if isStaff()
+                    || isCustomerLocationPin()
+                    || isCustomerPayment()
+                    || isCustomerPushToken();
+
+      function isCustomerLocationPin() {
+        return request.resource.data.diff(resource.data)
+                 .affectedKeys().hasOnly(['customerLocation']);
+      }
+
+      function isCustomerPayment() {
+        return request.resource.data.diff(resource.data)
+                 .affectedKeys().hasOnly(['paid','paymentMethod','paymentReference'])
+          && request.resource.data.paid == true
+          && resource.data.paid != true
+          && request.resource.data.paymentMethod == 'online'
+          && request.resource.data.paymentReference is string
+          && request.resource.data.paymentReference.size() > 5;
+      }
+
+      // NEW for the mobile app: lets an anonymous customer attach (or
+      // refresh) this device's push token to their own order — the same
+      // narrow, single-field pattern as isCustomerLocationPin() above.
+      function isCustomerPushToken() {
+        return request.resource.data.diff(resource.data)
+                 .affectedKeys().hasOnly(['pushToken'])
+          && request.resource.data.pushToken is string
+          && request.resource.data.pushToken.size() > 0;
+      }
+
+      allow delete: if isStaff();
+    }
+
+    match /customers/{customerId} {
+      allow get: if true;
+      allow list: if false;
+      allow write: if isStaff();
+    }
+
+    match /referralCodes/{code} {
+      allow read, write: if isStaff();
+    }
+
+    // NEW collection for the mobile app: a customer or the app itself drops
+    // a "please notify someone" request here (see sendEmailJS() in
+    // index.html); a Cloud Function reads it with the Admin SDK (which
+    // ignores these rules) and turns it into a push notification, then
+    // deletes it. Nothing reads or lists these from the client, ever.
+    match /pushRequests/{requestId} {
+      allow create: if request.resource.data.keys().hasOnly(['template','params','createdAt'])
+        && request.resource.data.template is string
+        && request.resource.data.createdAt is number;
+      allow read, update, delete: if false;
+    }
+
+    // NEW collection for the mobile app: one document per staff device that
+    // has the admin dashboard open, so the "new order" push (the old admin
+    // EmailJS template) can reach every staff phone.
+    match /staffTokens/{token} {
+      allow read, write: if isStaff();
+    }
+  }
+}

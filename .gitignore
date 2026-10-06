@@ -1,0 +1,21 @@
+node_modules/
+android/app/build/
+android/build/
+android/.gradle/
+android/capacitor-cordova-android-plugins/build/
+ios/App/Pods/
+ios/App/build/
+ios/App/App/public/
+android/app/google-services.json
+ios/App/App/GoogleService-Info.plist
+functions/node_modules/
+.DS_Store
+
+# Signing keys, release builds and local secrets never go in the repo
+*.jks
+*.keystore
+*.aab
+*.apk
+secrets.env
+.env
+*service-account*.json
