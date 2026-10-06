@@ -53,8 +53,12 @@ Why it is built this way:
 ## Project structure
 
 ```
-www/                          The app itself (index.html holds the UI and logic)
-  index.html                  Booking, tracking, payment, staff dashboard, push registration and tap handling
+www/                          The app itself
+  index.html                  Page structure: booking form, tracking, payment, staff dashboard
+  js/app.js                   App logic: Firestore reads and writes, Paystack checkout, staff auth,
+                              push registration and notification tap handling
+  css/styles.css              Styling
+  images/                     Logo and icons
   cap/                        Capacitor runtime and push notification plugin
 supabase/functions/send-push/ Push worker (TypeScript, Deno)
 firestore.rules               Firestore security rules shared by the website and the app
@@ -71,7 +75,7 @@ MOBILE_APP_HANDOFF.md         Full build and store release guide
 
 1. Install Node.js, then run `npm install`
 2. Create a Firebase project, register an Android and an iOS app, and put the downloaded `google-services.json` in `android/app/` and `GoogleService-Info.plist` in `ios/App/App/` (both are gitignored)
-3. Put your own Firebase web config and Paystack public key in `www/index.html`
+3. Put your own Firebase web config and Paystack public key in `www/js/app.js`
 4. Deploy the rules with `firebase deploy --only firestore:rules`
 5. Deploy the push worker by following [`SUPABASE_SETUP.md`](SUPABASE_SETUP.md)
 6. Run `npx cap sync`, then `npx cap open android` or `npx cap open ios` and press Run
@@ -85,6 +89,6 @@ These are kept out on purpose:
 - The Android signing key and its passwords
 - The Firebase service account key and the push worker secret (stored as Supabase secrets)
 - `google-services.json` and `GoogleService-Info.plist`
-- The real offline admin passcode (`ADMIN_PASSCODE` in `www/index.html` is set to `CHANGE_ME`)
+- The real offline admin passcode (`ADMIN_PASSCODE` in `www/js/app.js` is set to `CHANGE_ME`)
 
-The Firebase web config and the Paystack public key that remain in `www/index.html` are designed to be public. The Firestore rules above keep the data safe.
+The Firebase web config and the Paystack public key that remain in `www/js/app.js` are designed to be public. The Firestore rules above keep the data safe.
