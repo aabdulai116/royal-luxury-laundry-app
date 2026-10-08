@@ -18,7 +18,9 @@ end
 
 target 'App' do
   capacitor_pods
-  # Add your Pods here
+  # Turns the iPhone's Apple push token into a Firebase (FCM) token, so the
+  # Supabase push worker can reach iPhones the same way it reaches Android.
+  pod 'FirebaseMessaging', '~> 11.0'
 end
 
 post_install do |installer|
