@@ -245,6 +245,8 @@ if(firebaseConfigured() && typeof firebase !== "undefined"){
    sendEmailJS() does under the hood changed, see its own comment below. */
 const CAP = (typeof Capacitor !== "undefined") ? Capacitor : null;
 const PUSH = (CAP && CAP.Plugins) ? CAP.Plugins.PushNotifications : null;
+const FILES = (CAP && CAP.Plugins) ? CAP.Plugins.Filesystem : null;
+const SHARE = (CAP && CAP.Plugins) ? CAP.Plugins.Share : null;
 let DEVICE_PUSH_TOKEN = null;
 
 function pushAvailable(){
@@ -1610,7 +1612,20 @@ async function downloadReceipt(orderId){
     doc.setTextColor(...muted);
     doc.text("Thank you for choosing Royal Luxury Laundry.", marginX, y);
 
-    doc.save(`${order.id}-receipt.pdf`);
+    // In the phone app, a browser-style download does nothing (Android) or
+    // replaces the app screen with the PDF (iPhone). Save the file into the
+    // app's cache and open the share sheet instead, so the customer can save
+    // it to Files, print it, or send it on WhatsApp. The website keeps the
+    // normal download.
+    const isNativeApp = CAP && typeof CAP.isNativePlatform === "function" && CAP.isNativePlatform();
+    if(isNativeApp && FILES && SHARE){
+      const fileName = `${order.id}-receipt.pdf`;
+      const base64 = doc.output("datauristring").split(",")[1];
+      const written = await FILES.writeFile({ path: fileName, data: base64, directory: "CACHE" });
+      await SHARE.share({ title: `Receipt ${order.id}`, url: written.uri, dialogTitle: "Save or share your receipt" });
+    }else{
+      doc.save(`${order.id}-receipt.pdf`);
+    }
   }catch(err){
     console.error("Receipt generation error:", err);
     showToast("Could not generate receipt: " + (err && err.message ? err.message : "please try again"));

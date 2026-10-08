@@ -135,7 +135,9 @@ function etaDelivery(orderId: string, quiet: boolean) {
     },
     apns: {
       headers: { "apns-collapse-id": tag },
-      payload: { aps: quiet ? {} : { sound: "default" } },
+      // iPhone equivalent of Android's quiet channel: "passive" updates the
+      // notification on the lock screen without lighting it up or buzzing.
+      payload: { aps: quiet ? { "interruption-level": "passive" } : { sound: "default" } },
     },
   };
 }
