@@ -83,6 +83,109 @@ function buildNotification(template: string, params: Record<string, any>) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Live delivery ETA
+//
+// While a staff member is sharing their location on an order (the app writes
+// order.driverLocation about every 8 seconds), each run of this worker works
+// out how far away they are and refreshes ONE notification on the customer's
+// phone: "about 9 min away". It uses the same estimate as the tracking page in
+// the app (straight line distance, padded 35% for winding roads, at 20 km/h),
+// so the notification and the screen always agree.
+//
+// The notification is replaced in place, not stacked: Android uses the same
+// notification tag and iOS the same collapse id for every update on an order.
+// Routine updates go to the quiet "delivery_eta" channel the app creates, so
+// they don't buzz every minute; "on the way" and "arriving now" do alert.
+// ---------------------------------------------------------------------------
+
+type LatLng = { lat: number; lng: number; updatedAt?: number };
+
+const ETA_FRESH_MS = 3 * 60 * 1000;   // ignore a driver location older than this
+const ETA_CHANNEL = "delivery_eta";
+
+function distanceKm(a: LatLng, b: LatLng) {
+  const R = 6371;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const h = Math.sin(dLat / 2) ** 2 + Math.sin(dLng / 2) ** 2 * Math.cos(lat1) * Math.cos(lat2);
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+function estimateEta(driverLoc?: LatLng, customerLoc?: LatLng) {
+  if (!driverLoc || !customerLoc) return null;
+  const roadKm = distanceKm(driverLoc, customerLoc) * 1.35;
+  const minutes = Math.max(1, Math.round((roadKm / 20) * 60));
+  return { km: roadKm, minutes, arriving: roadKm < 0.25 };
+}
+
+function etaPhrase(eta: { km: number; minutes: number }) {
+  return `about ${eta.minutes} min away (${eta.km.toFixed(1)} km)`;
+}
+
+// Delivery options that make a push replace the order's previous ETA push.
+function etaDelivery(orderId: string, quiet: boolean) {
+  const tag = `eta-${orderId}`;
+  return {
+    android: {
+      notification: quiet ? { tag, channelId: ETA_CHANNEL } : { tag },
+    },
+    apns: {
+      headers: { "apns-collapse-id": tag },
+      payload: { aps: quiet ? {} : { sound: "default" } },
+    },
+  };
+}
+
+async function liveEtaPass(db: FirebaseFirestore.Firestore, messaging: any) {
+  const cutoff = Date.now() - ETA_FRESH_MS;
+  const snap = await db.collection("orders").where("driverLocation.updatedAt", ">=", cutoff).get();
+  let sent = 0;
+
+  for (const doc of snap.docs) {
+    const order = doc.data() as any;
+    if (!order.pushToken || order.status === "Delivered") continue;
+    const eta = estimateEta(order.driverLocation, order.customerLocation);
+    if (!eta) continue;
+
+    const stateRef = db.collection("etaPushState").doc(doc.id);
+    const state = (await stateRef.get()).data() as any || {};
+    const who = order.assignedTo || "Our team";
+
+    let notification;
+    let quiet = true;
+    if (eta.arriving) {
+      if (state.arrivingSent) continue;
+      notification = { title: "Arriving now", body: `${who} is just outside with ${doc.id}.` };
+      quiet = false;
+    } else {
+      if (state.lastMinutes === eta.minutes) continue;
+      notification = { title: `${who} is on the way`, body: `${doc.id}: ${etaPhrase(eta)}.` };
+    }
+
+    try {
+      await messaging.send({
+        token: order.pushToken,
+        notification,
+        data: { template: "eta_update", order_id: doc.id },
+        ...etaDelivery(doc.id, quiet),
+      });
+      sent++;
+      await stateRef.set({
+        lastMinutes: eta.minutes,
+        arrivingSent: eta.arriving || !!state.arrivingSent,
+        updatedAt: Date.now(),
+      });
+    } catch (err) {
+      console.error("send-push: ETA update failed for", doc.id, err);
+    }
+  }
+  return sent;
+}
+
 async function resolveTargets(db: FirebaseFirestore.Firestore, template: string, params: Record<string, any>) {
   if (template === TEMPLATE_ADMIN_BOOKING) {
     const snap = await db.collection("staffTokens").get();
@@ -155,10 +258,33 @@ Deno.serve(async (req) => {
         continue;
       }
 
+      // "On the way": add the current ETA if the staff member's location has
+      // already come in, and tag it so the live ETA updates replace it.
+      let extra = {};
+      if (template === TEMPLATE_ON_THE_WAY && params && params.order_id) {
+        const orderSnap = await db.collection("orders").doc(params.order_id).get();
+        const order = orderSnap.exists ? (orderSnap.data() as any) : null;
+        const fresh = order && order.driverLocation && order.driverLocation.updatedAt >= Date.now() - ETA_FRESH_MS;
+        const eta = fresh ? estimateEta(order.driverLocation, order.customerLocation) : null;
+        if (eta) {
+          notification.body = notification.body.replace(/\.$/, "") + ` · ${eta.arriving ? "just outside" : etaPhrase(eta)}.`;
+          await db.collection("etaPushState").doc(params.order_id).set({
+            lastMinutes: eta.minutes,
+            arrivingSent: eta.arriving,
+            updatedAt: Date.now(),
+          });
+        } else {
+          // New trip: forget any ETA state left over from an earlier trip.
+          await db.collection("etaPushState").doc(params.order_id).delete().catch(() => null);
+        }
+        extra = etaDelivery(params.order_id, false);
+      }
+
       const result = await messaging.sendEachForMulticast({
         notification,
         data: { template: template || "", order_id: (params && params.order_id) || "" },
         tokens,
+        ...extra,
       });
       sent += result.successCount;
 
@@ -180,7 +306,14 @@ Deno.serve(async (req) => {
     }
   }
 
-  return new Response(JSON.stringify({ checked: pending.size, sent, skipped }), {
+  let etaSent = 0;
+  try {
+    etaSent = await liveEtaPass(db, messaging);
+  } catch (err) {
+    console.error("send-push: live ETA pass failed", err);
+  }
+
+  return new Response(JSON.stringify({ checked: pending.size, sent, skipped, etaSent }), {
     headers: { "Content-Type": "application/json" },
   });
 });

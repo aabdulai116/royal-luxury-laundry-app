@@ -263,6 +263,22 @@ async function ensurePushRegistered(){
     }
     if(status !== "granted") return null;
 
+    // Android only: a quiet channel for the live ETA notification, so the
+    // "about 9 min away" update can refresh every minute without buzzing
+    // each time. (iOS has no channels; the call just fails and is ignored.)
+    if(typeof PUSH.createChannel === "function"){
+      try{
+        await PUSH.createChannel({
+          id: "delivery_eta",
+          name: "Delivery ETA",
+          description: "Live arrival updates while your laundry is on the way",
+          importance: 2,
+          visibility: 1,
+          vibration: false
+        });
+      }catch(err){ /* not supported on this platform */ }
+    }
+
     return await new Promise((resolve) => {
       let settled = false;
       PUSH.addListener("registration", (token) => {
