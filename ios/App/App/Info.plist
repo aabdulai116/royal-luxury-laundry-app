@@ -45,5 +45,7 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Royal Luxury Laundry uses your location to pin your pickup spot and to show customers when their laundry is arriving.</string>
 </dict>
 </plist>
