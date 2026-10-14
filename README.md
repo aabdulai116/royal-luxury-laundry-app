@@ -12,6 +12,7 @@ The business already had a working website. This project turns it into native st
 - **Push notifications** for booking confirmation, status changes, "ready for delivery" with the final price, "on the way", and payment received
 - **Live delivery ETA:** while staff share their location, the tracking page shows a live map and arrival estimate, and the customer gets one notification that refreshes every minute ("about 9 min away"), then "Arriving now"
 - **Tap to act:** tapping a notification opens that order's tracking page, and a "ready for delivery" notification goes straight to payment
+- **Holiday greetings:** staff send personalised Christmas, Eid, Independence Day and other messages (now or scheduled) to customers who opted in
 - **Staff dashboard:** staff sign in with their own accounts, manage orders, set prices and get a push for every new booking
 - **Referral rewards** and loyalty points
 

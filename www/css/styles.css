@@ -312,6 +312,9 @@
   }
   .tab-btn:hover{ color:var(--ivory); }
   .tab-btn.active{ color:var(--gold-bright); border-bottom-color:var(--gold); }
+  /* App: four tabs don't fit a phone's width, so let the row scroll sideways. */
+  .admin-tabs{ overflow-x:auto; -webkit-overflow-scrolling:touch; scrollbar-width:none; }
+  .admin-tabs .tab-btn{ flex-shrink:0; white-space:nowrap; }
 
   .analytics-section{ margin-bottom:36px; }
   .analytics-section-title{ font-family: var(--mono); font-size:0.7rem; letter-spacing:2px; text-transform:uppercase; color:var(--gold); margin-bottom:16px; }

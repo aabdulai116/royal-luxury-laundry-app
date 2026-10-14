@@ -331,7 +331,7 @@
     </div>
     <div class="footer-bottom">
       <div class="fine">© 2026 Royal Luxury Laundry. All rights reserved.</div>
-      <div class="fine"><a class="admin-link" onclick="showAdmin()">Staff Login</a></div>
+      <div class="fine"><a id="promo-pref-link" class="admin-link" style="display:none; margin-right:18px;" onclick="openPromoModal()">Holiday messages</a><a class="admin-link" onclick="showAdmin()">Staff Login</a></div>
     </div>
   </footer>
 </div>
@@ -380,6 +380,7 @@
         <button id="admin-tab-orders" class="tab-btn active" onclick="switchAdminTab('orders')">Orders</button>
         <button id="admin-tab-analytics" class="tab-btn" onclick="switchAdminTab('analytics')">Analytics</button>
         <button id="admin-tab-leaderboard" class="tab-btn" onclick="switchAdminTab('leaderboard')">Leaderboard</button>
+        <button id="admin-tab-messages" class="tab-btn" onclick="switchAdminTab('messages')">Messages</button>
       </div>
 
       <div id="admin-orders-panel">
@@ -401,6 +402,7 @@
 
       <div id="admin-analytics-panel" style="display:none;"></div>
       <div id="admin-leaderboard-panel" style="display:none;"></div>
+      <div id="admin-messages-panel" style="display:none;"></div>
     </div>
   </div>
 </div>
@@ -460,6 +462,16 @@
       <input id="staff-name-input" type="text" placeholder="e.g. Kwame" onkeydown="if(event.key==='Enter') confirmStaffName()">
     </div>
     <button class="btn btn-solid" style="width:100%; justify-content:center; margin-top:8px;" onclick="confirmStaffName()">Continue</button>
+  </div>
+</div>
+
+<div id="promo-modal" class="modal-overlay" style="display:none;">
+  <div class="modal-card">
+    <div class="col-label" style="margin-bottom:6px;">Stay in touch</div>
+    <h3 style="font-family:var(--display); font-size:1.4rem; margin-bottom:6px;">Holiday greetings and offers?</h3>
+    <p style="color:var(--muted); font-size:0.85rem; margin-bottom:22px;">Now and then we send a short note for Christmas, Eid, Independence Day and other occasions, plus the odd special offer. You'll always get your order updates either way, and you can change this any time from "Holiday messages" at the bottom of the page.</p>
+    <button class="btn btn-solid" style="width:100%; justify-content:center; margin-bottom:10px;" onclick="savePromoChoice(true)">Yes, send them</button>
+    <button class="btn btn-ghost" style="width:100%; justify-content:center;" onclick="savePromoChoice(false)">No thanks</button>
   </div>
 </div>
 

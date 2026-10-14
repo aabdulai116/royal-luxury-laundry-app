@@ -313,7 +313,64 @@ async function registerPushForOrder(orderId){
     const token = await ensurePushRegistered();
     if(!token) return;
     await DB.collection("orders").doc(orderId).update({ pushToken: token });
+    maybeAskPromoConsent(orderId);
   }catch(err){ console.error("Save push token to order failed:", err); }
+}
+
+/* ---------------- Holiday greetings: customer opt-in ----------------
+   Greetings and offers only go to customers who said yes. Apple requires an
+   explicit opt-in (and a way to opt out) before an app sends anything that
+   isn't about the customer's own order, so the choice is asked once, saved
+   against this phone's push token in promoPrefs/{token}, and can be changed
+   from "Holiday messages" in the footer. Order updates are not affected. */
+const PROMO_CHOICE_KEY = "rl_promo_choice";
+let PROMO_ORDER_ID = null;
+
+function readPromoChoice(){
+  try{ return localStorage.getItem(PROMO_CHOICE_KEY); }catch(_){ return null; }
+}
+
+function maybeAskPromoConsent(orderId){
+  PROMO_ORDER_ID = orderId || PROMO_ORDER_ID;
+  if(readPromoChoice() !== null) return;
+  setTimeout(() => { document.getElementById("promo-modal").style.display = "flex"; }, 1500);
+}
+
+function openPromoModal(){
+  document.getElementById("promo-modal").style.display = "flex";
+}
+
+async function savePromoChoice(optIn){
+  document.getElementById("promo-modal").style.display = "none";
+  try{ localStorage.setItem(PROMO_CHOICE_KEY, optIn ? "yes" : "no"); }catch(_){}
+  if(!DB) return;
+  try{
+    const token = await ensurePushRegistered();
+    if(!token){
+      showToast("Turn on notifications for this app in your phone settings to get these.");
+      return;
+    }
+    const pref = { optIn: !!optIn, updatedAt: Date.now() };
+    if(PROMO_ORDER_ID){
+      try{
+        const order = await getOrder(PROMO_ORDER_ID);
+        if(order && order.name) pref.name = String(order.name).slice(0, 80);
+      }catch(_){}
+    }
+    await DB.collection("promoPrefs").doc(token).set(pref);
+    showToast(optIn ? "You're in. We'll send the occasional greeting." : "Got it. Only order updates from now on.");
+  }catch(err){
+    console.error("Saving holiday message choice failed:", err);
+  }
+}
+
+if(pushAvailable()){
+  document.addEventListener("DOMContentLoaded", () => {
+    const link = document.getElementById("promo-pref-link");
+    if(link) link.style.display = "inline";
+  });
+  const linkNow = document.getElementById("promo-pref-link");
+  if(linkNow) linkNow.style.display = "inline";
 }
 
 /* Called once the admin dashboard is open — lets the new-order-alert push
@@ -1829,11 +1886,208 @@ async function confirmStaffName(){
 }
 async function adminLogout(){
   stopAdminLiveUpdates();
+  if(BROADCASTS_UNSUBSCRIBE){ try{ BROADCASTS_UNSUBSCRIBE(); }catch(_){} BROADCASTS_UNSUBSCRIBE = null; }
   if(AUTH){
     try{ await AUTH.signOut(); }catch(err){ console.error("Sign-out error:", err); }
   }
   sessionStorage_adminAuthed = false;
   showSite();
+}
+
+/* ---------------- Admin: messages to customers ----------------
+   Staff write a greeting here; it is saved to broadcasts/{id} with
+   status "pending", and the Supabase push worker sends it (on its next
+   minute, or at the scheduled time) to every customer who opted in. */
+const MESSAGE_TEMPLATES = [
+  { id: "custom", label: "Write my own", title: "", body: "" },
+  { id: "christmas", label: "Christmas", title: "Merry Christmas, {name}! 🎄", body: "Wishing you and your family a joyful Christmas from all of us at Royal Luxury Laundry. Leave the laundry to us and enjoy the season." },
+  { id: "newyear", label: "New Year", title: "Happy New Year, {name}! 🎉", body: "Thank you for trusting us with your clothes this year. Here's to a fresh, clean start in the new year!" },
+  { id: "valentine", label: "Valentine's Day", title: "Happy Valentine's Day, {name} ❤️", body: "Spread the love today. We'll take care of the laundry so you can spend more time with the people you love." },
+  { id: "independence", label: "Independence Day (6 March)", title: "Happy Independence Day, {name}! 🇬🇭", body: "Happy Independence Day, Ghana! Celebrate in style with crisp, fresh clothes from Royal Luxury Laundry." },
+  { id: "easter", label: "Easter", title: "Happy Easter, {name}!", body: "Wishing you a blessed Easter. Book a pickup and step into the holiday looking your best." },
+  { id: "eid", label: "Eid", title: "Eid Mubarak, {name}!", body: "Wishing you and your family a blessed Eid. Let us prepare your finest outfits for the celebration." },
+  { id: "mothers", label: "Mother's Day", title: "Happy Mother's Day!", body: "To every mother who keeps the family going: today, let us handle the laundry. Happy Mother's Day from Royal Luxury Laundry." },
+  { id: "fathers", label: "Father's Day", title: "Happy Father's Day!", body: "Celebrating the fathers who keep us going. Happy Father's Day from Royal Luxury Laundry." },
+  { id: "school", label: "Back to school", title: "Back to school, {name}! 🎒", body: "New term, fresh uniforms. Book a pickup and we'll have them clean, pressed and ready for the first day." },
+  { id: "farmers", label: "Farmers' Day", title: "Happy Farmers' Day, {name}!", body: "Celebrating the hardworking farmers who feed Ghana. Enjoy the holiday from all of us at Royal Luxury Laundry." },
+  { id: "holidays", label: "Happy holidays", title: "Happy holidays, {name}!", body: "Season's greetings from Royal Luxury Laundry. Thank you for being part of our story this year." },
+  { id: "offer", label: "Special offer", title: "A treat for you, {name}", body: "This week only: [describe your offer here]. Book a pickup in the app to claim it." }
+];
+const MSG_TITLE_MAX = 60;
+const MSG_BODY_MAX = 200;
+let BROADCASTS_UNSUBSCRIBE = null;
+
+function renderMessagesPanel(){
+  const panel = document.getElementById("admin-messages-panel");
+  if(!panel) return;
+  if(!panel.dataset.ready){
+    panel.dataset.ready = "1";
+    panel.innerHTML = `
+      <div style="display:grid; grid-template-columns:minmax(0,1.2fr) minmax(0,1fr); gap:28px;" class="msg-grid">
+        <div>
+          <div class="col-label" style="margin-bottom:6px;">Message your customers</div>
+          <p style="color:var(--muted); font-size:0.82rem; margin-bottom:20px;">Goes as a push notification to app customers who chose to receive holiday messages. Type {name} to use each customer's first name.</p>
+          <div class="field">
+            <label for="msg-template">Start from</label>
+            <select id="msg-template" onchange="applyMessageTemplate(this.value)">
+              ${MESSAGE_TEMPLATES.map(m => `<option value="${m.id}">${escapeHtml(m.label)}</option>`).join("")}
+            </select>
+          </div>
+          <div class="field">
+            <label for="msg-title">Title <span id="msg-title-count" style="float:right;"></span></label>
+            <input id="msg-title" type="text" maxlength="${MSG_TITLE_MAX}" placeholder="e.g. Merry Christmas, {name}!" oninput="updateMessagePreview()">
+          </div>
+          <div class="field">
+            <label for="msg-body">Message <span id="msg-body-count" style="float:right;"></span></label>
+            <textarea id="msg-body" maxlength="${MSG_BODY_MAX}" rows="4" placeholder="What would you like to say?" oninput="updateMessagePreview()"></textarea>
+          </div>
+          <div class="field">
+            <label>When</label>
+            <div style="display:flex; gap:18px; align-items:center; flex-wrap:wrap; font-size:0.85rem;">
+              <label style="text-transform:none; letter-spacing:0; font-size:0.85rem; color:var(--ivory); margin:0;"><input type="radio" name="msg-when" value="now" style="width:auto; display:inline-block; margin:0 6px 0 0; vertical-align:middle;" checked onchange="toggleMessageSchedule()"> Send now</label>
+              <label style="text-transform:none; letter-spacing:0; font-size:0.85rem; color:var(--ivory); margin:0;"><input type="radio" name="msg-when" value="later" style="width:auto; display:inline-block; margin:0 6px 0 0; vertical-align:middle;" onchange="toggleMessageSchedule()"> Schedule</label>
+            </div>
+            <input id="msg-send-at" type="datetime-local" style="display:none; margin-top:10px;">
+          </div>
+          <button id="msg-send-btn" class="btn btn-solid" style="width:100%; justify-content:center;" onclick="sendCustomerMessage()">Send to customers</button>
+          <div id="msg-status" class="form-msg"></div>
+        </div>
+        <div>
+          <div class="col-label" style="margin-bottom:10px;">Preview</div>
+          <div style="background:var(--bg-elevated); border:1px solid var(--border-soft); border-radius:14px; padding:14px 16px; margin-bottom:28px;">
+            <div style="font-size:0.68rem; color:var(--muted); margin-bottom:6px;">Royal Luxury Laundry · now</div>
+            <div id="msg-preview-title" style="font-weight:600; color:var(--ivory); font-size:0.9rem; margin-bottom:4px;"></div>
+            <div id="msg-preview-body" style="color:var(--ivory); font-size:0.85rem; line-height:1.4;"></div>
+          </div>
+          <div class="col-label" style="margin-bottom:10px;">Recent messages</div>
+          <div id="msg-history"><div class="empty-note">Loading...</div></div>
+        </div>
+      </div>`;
+    if(window.innerWidth < 760){
+      panel.querySelector(".msg-grid").style.gridTemplateColumns = "1fr";
+    }
+    updateMessagePreview();
+  }
+  watchBroadcasts();
+}
+
+function applyMessageTemplate(id){
+  const tpl = MESSAGE_TEMPLATES.find(m => m.id === id);
+  if(!tpl) return;
+  document.getElementById("msg-title").value = tpl.title;
+  document.getElementById("msg-body").value = tpl.body;
+  updateMessagePreview();
+}
+
+function personaliseMessage(text, firstName){
+  return String(text || "").replace(/\{name\}/g, firstName || "friend");
+}
+
+function updateMessagePreview(){
+  const title = document.getElementById("msg-title").value;
+  const body = document.getElementById("msg-body").value;
+  document.getElementById("msg-title-count").textContent = `${title.length}/${MSG_TITLE_MAX}`;
+  document.getElementById("msg-body-count").textContent = `${body.length}/${MSG_BODY_MAX}`;
+  document.getElementById("msg-preview-title").textContent = personaliseMessage(title, "Ama") || "Your title";
+  document.getElementById("msg-preview-body").textContent = personaliseMessage(body, "Ama") || "Your message";
+}
+
+function toggleMessageSchedule(){
+  const later = document.querySelector('input[name="msg-when"]:checked').value === "later";
+  document.getElementById("msg-send-at").style.display = later ? "block" : "none";
+}
+
+function showMessageStatus(text, ok){
+  const el = document.getElementById("msg-status");
+  el.textContent = text;
+  el.className = "form-msg show " + (ok ? "ok" : "err");
+}
+
+async function sendCustomerMessage(){
+  const title = document.getElementById("msg-title").value.trim();
+  const body = document.getElementById("msg-body").value.trim();
+  if(!title || !body){ showMessageStatus("Add a title and a message first.", false); return; }
+  if(/\[describe your offer here\]/.test(body)){ showMessageStatus("Replace [describe your offer here] with your actual offer.", false); return; }
+  if(!DB){ showMessageStatus("Messages need Firebase to be connected.", false); return; }
+
+  let sendAt = Date.now();
+  const later = document.querySelector('input[name="msg-when"]:checked').value === "later";
+  if(later){
+    const raw = document.getElementById("msg-send-at").value;
+    if(!raw){ showMessageStatus("Pick a date and time to send it.", false); return; }
+    sendAt = new Date(raw).getTime();
+    if(!(sendAt > Date.now())){ showMessageStatus("Pick a time in the future.", false); return; }
+  }
+  const when = later ? `on ${new Date(sendAt).toLocaleString()}` : "now";
+  if(!confirm(`Send "${personaliseMessage(title, "Ama")}" to all customers who opted in, ${when}?`)) return;
+
+  const btn = document.getElementById("msg-send-btn");
+  btn.disabled = true;
+  try{
+    await DB.collection("broadcasts").add({
+      title, body,
+      status: "pending",
+      createdAt: Date.now(),
+      sendAt,
+      createdBy: getStaffName() || "staff"
+    });
+    showMessageStatus(later ? `Scheduled for ${new Date(sendAt).toLocaleString()}.` : "Queued. It will go out within a minute.", true);
+    document.getElementById("msg-template").value = "custom";
+    document.getElementById("msg-title").value = "";
+    document.getElementById("msg-body").value = "";
+    updateMessagePreview();
+  }catch(err){
+    console.error("Queue broadcast failed:", err);
+    showMessageStatus("Couldn't queue the message: " + (err && err.message ? err.message : "please try again"), false);
+  }finally{
+    btn.disabled = false;
+  }
+}
+
+function watchBroadcasts(){
+  if(BROADCASTS_UNSUBSCRIBE || !DB) return;
+  BROADCASTS_UNSUBSCRIBE = DB.collection("broadcasts").orderBy("createdAt", "desc").limit(10).onSnapshot(
+    (snap) => renderBroadcastHistory(snap.docs.map(d => Object.assign({ id: d.id }, d.data()))),
+    (err) => {
+      console.error("Broadcast history error:", err);
+      BROADCASTS_UNSUBSCRIBE = null;
+      const el = document.getElementById("msg-history");
+      if(el) el.innerHTML = `<div class="empty-note">Couldn't load recent messages.</div>`;
+    }
+  );
+}
+
+function renderBroadcastHistory(items){
+  const el = document.getElementById("msg-history");
+  if(!el) return;
+  if(!items.length){ el.innerHTML = `<div class="empty-note">No messages sent yet.</div>`; return; }
+  const label = (b) => {
+    if(b.status === "sent") return `Sent to ${b.sentCount || 0} ${b.sentCount === 1 ? "phone" : "phones"}`;
+    if(b.status === "sending") return "Sending...";
+    if(b.status === "cancelled") return "Cancelled";
+    if(b.status === "failed") return "Failed to send";
+    if(b.sendAt && b.sendAt > Date.now()) return `Scheduled · ${new Date(b.sendAt).toLocaleString()}`;
+    return "Waiting to send";
+  };
+  el.innerHTML = items.map(b => `
+    <div style="border:1px solid var(--border-soft); padding:12px 14px; margin-bottom:10px; font-size:0.82rem;">
+      <div style="color:var(--ivory); font-weight:600; margin-bottom:3px;">${escapeHtml(b.title || "")}</div>
+      <div style="color:var(--muted); margin-bottom:6px;">${escapeHtml(b.body || "")}</div>
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; font-size:0.72rem; color:var(--gold-bright);">
+        <span>${escapeHtml(label(b))}${b.createdBy ? " · by " + escapeHtml(b.createdBy) : ""}</span>
+        ${b.status === "pending" ? `<button class="btn btn-ghost btn-small" style="padding:4px 10px; font-size:0.66rem;" onclick="cancelBroadcast('${b.id}')">Cancel</button>` : ""}
+      </div>
+    </div>`).join("");
+}
+
+async function cancelBroadcast(id){
+  if(!confirm("Cancel this message? It won't be sent.")) return;
+  try{
+    await DB.collection("broadcasts").doc(id).update({ status: "cancelled" });
+  }catch(err){
+    console.error("Cancel broadcast failed:", err);
+    showToast("Couldn't cancel: it may already be sending.");
+  }
 }
 
 /* ---------------- Admin dashboard ---------------- */
@@ -1848,8 +2102,11 @@ function switchAdminTab(tab){
   document.getElementById("admin-orders-panel").style.display = tab === "orders" ? "block" : "none";
   document.getElementById("admin-analytics-panel").style.display = tab === "analytics" ? "block" : "none";
   document.getElementById("admin-leaderboard-panel").style.display = tab === "leaderboard" ? "block" : "none";
+  document.getElementById("admin-tab-messages").classList.toggle("active", tab === "messages");
+  document.getElementById("admin-messages-panel").style.display = tab === "messages" ? "block" : "none";
   if(tab === "analytics") renderAnalytics();
   if(tab === "leaderboard") renderLeaderboard();
+  if(tab === "messages") renderMessagesPanel();
 }
 
 /* Keeps the admin dashboard live. Without this, orders are fetched once and

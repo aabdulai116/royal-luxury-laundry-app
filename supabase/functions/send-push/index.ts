@@ -188,6 +188,77 @@ async function liveEtaPass(db: FirebaseFirestore.Firestore, messaging: any) {
   return sent;
 }
 
+// ---------------------------------------------------------------------------
+// Holiday greetings and offers
+//
+// Staff queue a message in the app's admin dashboard (broadcasts/{id},
+// status "pending", with a sendAt time). Each run, any message that is due is
+// claimed (so two overlapping runs can never send it twice), sent to every
+// phone that opted in (promoPrefs where optIn == true) with {name} replaced
+// by that customer's first name, and marked "sent" with a count.
+// ---------------------------------------------------------------------------
+
+function personalise(text: string, name?: string) {
+  const first = (name || "").trim().split(/\s+/)[0];
+  return String(text || "").replace(/\{name\}/g, first || "friend");
+}
+
+async function broadcastPass(db: FirebaseFirestore.Firestore, messaging: any) {
+  const due = await db.collection("broadcasts").where("status", "==", "pending").limit(5).get();
+  let total = 0;
+
+  for (const doc of due.docs) {
+    const b = doc.data() as any;
+    if (b.sendAt && b.sendAt > Date.now()) continue;
+
+    const claimed = await db.runTransaction(async (tx) => {
+      const fresh = await tx.get(doc.ref);
+      if (!fresh.exists || (fresh.data() as any).status !== "pending") return false;
+      tx.update(doc.ref, { status: "sending", startedAt: Date.now() });
+      return true;
+    });
+    if (!claimed) continue;
+
+    try {
+      const prefs = await db.collection("promoPrefs").where("optIn", "==", true).get();
+      const messages = prefs.docs.map((p) => {
+        const name = (p.data() as any).name;
+        return {
+          token: p.id,
+          notification: { title: personalise(b.title, name), body: personalise(b.body, name) },
+          data: { template: "broadcast", order_id: "" },
+          apns: { payload: { aps: { sound: "default" } } },
+        };
+      });
+
+      let sent = 0;
+      let failed = 0;
+      for (let i = 0; i < messages.length; i += 500) {
+        const batch = messages.slice(i, i + 500);
+        const res = await messaging.sendEach(batch);
+        sent += res.successCount;
+        failed += res.failureCount;
+        await Promise.all(
+          res.responses.map((r: any, j: number) => {
+            const code = r.error && r.error.code;
+            if (!r.success && (code === "messaging/registration-token-not-registered" || code === "messaging/invalid-registration-token")) {
+              return db.collection("promoPrefs").doc(batch[j].token).delete().catch(() => null);
+            }
+            return null;
+          }),
+        );
+      }
+
+      await doc.ref.update({ status: "sent", sentAt: Date.now(), sentCount: sent, failedCount: failed, audience: messages.length });
+      total += sent;
+    } catch (err) {
+      console.error("send-push: broadcast failed", doc.id, err);
+      await doc.ref.update({ status: "failed", error: String(err).slice(0, 300) }).catch(() => null);
+    }
+  }
+  return total;
+}
+
 async function resolveTargets(db: FirebaseFirestore.Firestore, template: string, params: Record<string, any>) {
   if (template === TEMPLATE_ADMIN_BOOKING) {
     const snap = await db.collection("staffTokens").get();
@@ -315,7 +386,14 @@ Deno.serve(async (req) => {
     console.error("send-push: live ETA pass failed", err);
   }
 
-  return new Response(JSON.stringify({ checked: pending.size, sent, skipped, etaSent }), {
+  let broadcastSent = 0;
+  try {
+    broadcastSent = await broadcastPass(db, messaging);
+  } catch (err) {
+    console.error("send-push: broadcast pass failed", err);
+  }
+
+  return new Response(JSON.stringify({ checked: pending.size, sent, skipped, etaSent, broadcastSent }), {
     headers: { "Content-Type": "application/json" },
   });
 });

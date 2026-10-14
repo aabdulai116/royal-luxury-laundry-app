@@ -99,6 +99,41 @@ service cloud.firestore {
       allow read, update, delete: if false;
     }
 
+    // NEW for the mobile app: holiday greetings and offers. Staff queue a
+    // message here from the admin dashboard; the Supabase push worker sends
+    // it and marks it "sent". Staff can cancel a message that hasn't gone
+    // out yet, and nothing else about it can be edited from the app.
+    match /broadcasts/{broadcastId} {
+      allow read: if isStaff();
+      allow create: if isStaff()
+        && request.resource.data.keys().hasOnly(['title','body','status','createdAt','sendAt','createdBy'])
+        && request.resource.data.status == "pending"
+        && request.resource.data.title is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.title.size() <= 60
+        && request.resource.data.body is string
+        && request.resource.data.body.size() > 0
+        && request.resource.data.body.size() <= 200
+        && request.resource.data.createdAt is number
+        && request.resource.data.sendAt is number;
+      allow update: if isStaff()
+        && resource.data.status == "pending"
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+        && request.resource.data.status == "cancelled";
+      allow delete: if false;
+    }
+
+    // NEW for the mobile app: each phone's yes/no to holiday greetings,
+    // keyed by its push token. Only the worker reads these.
+    match /promoPrefs/{token} {
+      allow create, update: if request.resource.data.keys().hasOnly(['optIn','name','updatedAt'])
+        && request.resource.data.optIn is bool
+        && request.resource.data.updatedAt is number
+        && (!('name' in request.resource.data)
+            || (request.resource.data.name is string && request.resource.data.name.size() <= 80));
+      allow read, delete: if false;
+    }
+
     // NEW collection for the mobile app: one document per staff device that
     // has the admin dashboard open, so the "new order" push (the old admin
     // EmailJS template) can reach every staff phone.
